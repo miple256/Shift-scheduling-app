@@ -1,0 +1,10 @@
+{
+  "description": "This app streamlines shift management for employees, allowing easy scheduling, shift changes, income predictions, and access to helpful resources.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
