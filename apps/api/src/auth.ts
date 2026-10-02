@@ -1,10 +1,10 @@
 import { betterAuth } from 'better-auth'
 import { drizzleAdapter } from '@better-auth/drizzle-adapter'
-import { eq } from 'drizzle-orm'
+import { count, eq, ne } from 'drizzle-orm'
 import { db } from './db/index.js'
 import { accounts, incomeSettings, sessions, users, verifications } from './db/schema.js'
 
-const palette = ['#ec4899', '#6366f1', '#10b981', '#f59e0b', '#3b82f6']
+export const MEMBER_COLORS = ['#ec4899', '#6366f1', '#10b981', '#f59e0b', '#3b82f6', '#8b5cf6', '#14b8a6', '#f97316'] as const
 const authSecret = process.env.BETTER_AUTH_SECRET
 if (process.env.NODE_ENV === 'production' && !authSecret) {
   throw new Error('BETTER_AUTH_SECRET must be configured in production')
@@ -39,7 +39,11 @@ export const auth = betterAuth({
       create: {
         after: async (user) => {
           const initial = user.name.trim().slice(0, 1) || '?'
-          const color = palette[Math.floor(Math.random() * palette.length)]
+          const colorCounts = await db.select({ color: users.color, total: count() }).from(users).where(ne(users.id, user.id)).groupBy(users.color)
+          const assignedCounts = new Map(colorCounts.map(({ color, total }) => [color, total]))
+          const minimum = Math.min(...MEMBER_COLORS.map((color) => assignedCounts.get(color) ?? 0))
+          const leastUsed = MEMBER_COLORS.filter((color) => (assignedCounts.get(color) ?? 0) === minimum)
+          const color = leastUsed[Math.floor(Math.random() * leastUsed.length)]
           const adminEmails = (process.env.ADMIN_EMAILS ?? '').split(',').map((email) => email.trim().toLowerCase()).filter(Boolean)
           const role = adminEmails.includes(user.email.toLowerCase()) ? 'admin' : 'staff'
           await db.update(users).set({ initial, color, role }).where(eq(users.id, user.id))

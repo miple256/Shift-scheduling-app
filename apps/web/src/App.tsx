@@ -6,6 +6,7 @@ import { authClient } from './lib/auth-client';
 import { useAuth } from './hooks/useAuth';
 import { useShifts, useSaveShifts } from './hooks/useShifts';
 import { useDeleteShift } from './hooks/useDeleteShift';
+import { useUpdateShiftTimes } from './hooks/useUpdateShiftTimes';
 import { useMembersByDate } from './hooks/useMembersByDate';
 import { useProfile, useSaveProfile } from './hooks/useProfile';
 import { useIncomeSettings, useSaveIncomeSettings } from './hooks/useIncomeSettings';
@@ -14,18 +15,18 @@ import { useSwaps } from './hooks/useSwaps';
 import { useSubmitHelpItem, useApproveHelpItem } from './hooks/useHelpMutations';
 import { useCreateSwap, useSwapCandidates } from './hooks/useSwaps';
 import { useDeleteAccount } from './hooks/useDeleteAccount';
-import type { AuthScreen, HelpItem, IncomeSettings, Screen, Shift, TimePreset, UserProfile } from './types';
+import { MEMBER_COLORS, type AuthScreen, type HelpItem, type IncomeSettings, type Screen, type Shift, type TimePreset, type UserProfile } from './types';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 // ─── Static data ──────────────────────────────────────────────────────────────
 
 const TIME_PRESETS: TimePreset[] = [
-  { label: 'ランチ（11:00-15:00）', startTime: '11:00', endTime: '15:00', type: 'lunch' },
-  { label: 'ディナー（17:00-22:00）', startTime: '17:00', endTime: '22:00', type: 'dinner' },
+  { label: 'ランチ（10:00-15:00）', startTime: '10:00', endTime: '15:00', type: 'lunch' },
+  { label: 'ディナー（17:00-21:30）', startTime: '17:00', endTime: '21:30', type: 'dinner' },
   { label: 'ランチ（10:30-15:00）', startTime: '10:30', endTime: '15:00', type: 'lunch' },
   { label: 'ディナー（18:00-23:00）', startTime: '18:00', endTime: '23:00', type: 'dinner' },
-  { label: '通し（11:00-22:00）', startTime: '11:00', endTime: '22:00', type: 'lunch' },
+  { label: '通し（10:00-15:00 / 17:00-21:30）', startTime: '10:00', endTime: '21:30', type: 'full' },
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -207,6 +208,7 @@ function Calendar({ year, month, shifts, today, onPrev, onNext, onDayClick }: {
     if (!shiftMap.has(key)) shiftMap.set(key, []);
     shiftMap.get(key)!.push(s.type === 'lunch' ? 'L' : 'D');
   });
+  shiftMap.forEach((markers) => markers.sort((a, b) => Number(a === 'D') - Number(b === 'D')));
 
   const [ty, tm, td] = today.split('-').map(Number);
   const isToday = (d: number) => year === ty && month === tm - 1 && d === td;
@@ -270,17 +272,49 @@ function Calendar({ year, month, shifts, today, onPrev, onNext, onDayClick }: {
 
 // ─── Day Action Modal ─────────────────────────────────────────────────────────
 
-function DayActionModal({ date, shifts, onClose, onShiftChange, onShiftEntry, onShiftDelete }: {
+function DayActionModal({ date, shifts, onClose, onShiftChange, onShiftEntry, onShiftDelete, onShiftTimeUpdate }: {
   date: string; shifts: Shift[]; onClose: () => void;
   onShiftChange: (d: string) => void; onShiftEntry: (d: string) => void;
-  onShiftDelete: (d: string, t: 'lunch' | 'dinner') => void;
+  onShiftDelete: (d: string, t: 'lunch' | 'dinner') => Promise<void>;
+  onShiftTimeUpdate: (d: string, t: 'lunch' | 'dinner', startTime: string, endTime: string) => Promise<void>;
 }) {
   const [y, m, d] = date.split('-').map(Number);
   const dayNames = ['日','月','火','水','木','金','土'];
   const dow = new Date(y, m - 1, d).getDay();
   const label = `${m}月${d}日（${dayNames[dow]}）`;
   const [confirmDelete, setConfirmDelete] = useState<'lunch' | 'dinner' | null>(null);
-  const dayShifts = shifts.filter((s) => s.date === date);
+  const [editingType, setEditingType] = useState<'lunch' | 'dinner' | null>(null);
+  const [editStartTime, setEditStartTime] = useState('');
+  const [editEndTime, setEditEndTime] = useState('');
+  const [editError, setEditError] = useState('');
+  const [savingTime, setSavingTime] = useState(false);
+  const dayShifts = shifts
+    .filter((s) => s.date === date)
+    .sort((a, b) => Number(a.type === 'dinner') - Number(b.type === 'dinner'));
+
+  const startEditing = (shift: Shift) => {
+    setEditingType(shift.type);
+    setEditStartTime(shift.startTime);
+    setEditEndTime(shift.endTime);
+    setEditError('');
+    setConfirmDelete(null);
+  };
+
+  const saveEditedTime = async (type: 'lunch' | 'dinner') => {
+    if (editEndTime <= editStartTime) {
+      setEditError('終了時刻は開始時刻より後にしてください');
+      return;
+    }
+    setSavingTime(true);
+    setEditError('');
+    try {
+      await onShiftTimeUpdate(date, type, editStartTime, editEndTime);
+    } catch (error) {
+      setEditError(error instanceof Error ? error.message : 'シフト時間を変更できませんでした');
+    } finally {
+      setSavingTime(false);
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center" onClick={onClose}>
@@ -312,26 +346,51 @@ function DayActionModal({ date, shifts, onClose, onShiftChange, onShiftEntry, on
               <div className="w-10 h-10 rounded-xl bg-red-400 flex items-center justify-center flex-shrink-0">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>
               </div>
-              <div><p className="font-bold text-gray-900">予定削除</p><p className="text-xs text-gray-500 mt-0.5">間違えて記入した予定を削除する</p></div>
+              <div><p className="font-bold text-gray-900">予定の変更・削除</p><p className="text-xs text-gray-500 mt-0.5">勤務時間の変更や予定の削除ができます</p></div>
             </div>
             <div className="space-y-2">
               {dayShifts.map((s) => {
                 const isConfirming = confirmDelete === s.type;
                 return (
-                  <div key={s.type} className="bg-white rounded-xl p-3 flex items-center justify-between">
-                    <div>
-                      <span className={`text-xs font-bold px-2 py-0.5 rounded-full mr-2 ${s.type === 'lunch' ? 'bg-amber-100 text-amber-600' : 'bg-indigo-100 text-indigo-600'}`}>
-                        {s.type === 'lunch' ? 'ランチ' : 'ディナー'}
-                      </span>
-                      <span className="text-sm text-gray-600">{s.startTime}〜{s.endTime}</span>
-                    </div>
-                    {isConfirming ? (
-                      <div className="flex gap-2">
-                        <button onClick={() => setConfirmDelete(null)} className="text-xs px-3 py-1.5 rounded-lg bg-gray-100 text-gray-500 font-semibold">キャンセル</button>
-                        <button onClick={() => { onShiftDelete(date, s.type); onClose(); }} className="text-xs px-3 py-1.5 rounded-lg bg-red-500 text-white font-semibold">削除する</button>
+                  <div key={s.type} className="bg-white rounded-xl p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <span className={`text-xs font-bold px-2 py-0.5 rounded-full mr-2 ${s.type === 'lunch' ? 'bg-amber-100 text-amber-600' : 'bg-indigo-100 text-indigo-600'}`}>
+                          {s.type === 'lunch' ? 'ランチ' : 'ディナー'}
+                        </span>
+                        <span className="text-sm text-gray-600">{s.startTime}〜{s.endTime}</span>
                       </div>
-                    ) : (
-                      <button onClick={() => setConfirmDelete(s.type)} className="text-xs px-3 py-1.5 rounded-lg border border-red-200 text-red-400 font-semibold">削除</button>
+                      <div className="flex gap-2">
+                        {!isConfirming && editingType !== s.type && (
+                          <button onClick={() => startEditing(s)} className="text-xs px-3 py-1.5 rounded-lg border border-indigo-200 text-indigo-500 font-semibold">時間変更</button>
+                        )}
+                        {isConfirming ? (
+                          <>
+                            <button onClick={() => setConfirmDelete(null)} className="text-xs px-3 py-1.5 rounded-lg bg-gray-100 text-gray-500 font-semibold">キャンセル</button>
+                            <button onClick={() => { void onShiftDelete(date, s.type); }} className="text-xs px-3 py-1.5 rounded-lg bg-red-500 text-white font-semibold">削除する</button>
+                          </>
+                        ) : editingType !== s.type ? (
+                          <button onClick={() => setConfirmDelete(s.type)} className="text-xs px-3 py-1.5 rounded-lg border border-red-200 text-red-400 font-semibold">削除</button>
+                        ) : null}
+                      </div>
+                    </div>
+                    {editingType === s.type && (
+                      <div className="mt-3 space-y-3">
+                        <div className="flex items-center gap-2">
+                          <label className="flex-1 text-xs text-gray-500">開始
+                            <input type="time" value={editStartTime} onChange={(event) => setEditStartTime(event.target.value)} className="mt-1 w-full rounded-lg border border-gray-200 px-2 py-2 text-sm text-gray-700" />
+                          </label>
+                          <span className="mt-5 text-gray-300">〜</span>
+                          <label className="flex-1 text-xs text-gray-500">終了
+                            <input type="time" value={editEndTime} onChange={(event) => setEditEndTime(event.target.value)} className="mt-1 w-full rounded-lg border border-gray-200 px-2 py-2 text-sm text-gray-700" />
+                          </label>
+                        </div>
+                        {editError && <p className="text-xs text-red-500">{editError}</p>}
+                        <div className="flex justify-end gap-2">
+                          <button onClick={() => { setEditingType(null); setEditError(''); }} disabled={savingTime} className="text-xs px-3 py-1.5 rounded-lg bg-gray-100 text-gray-500 font-semibold">キャンセル</button>
+                          <button onClick={() => void saveEditedTime(s.type)} disabled={savingTime || editEndTime <= editStartTime} className="text-xs px-3 py-1.5 rounded-lg bg-indigo-500 text-white font-semibold disabled:opacity-50">{savingTime ? '保存中...' : '保存する'}</button>
+                        </div>
+                      </div>
                     )}
                   </div>
                 );
@@ -412,7 +471,7 @@ function ShiftChangeScreen({ initialDate, shifts, currentMemberId, onBack }: {
       <h2 className="text-xl font-bold text-gray-900">シフトを交代しました</h2>
       <p className="text-gray-500 text-sm">{dateLabel} {typeLabel}</p>
       <p className="text-gray-700 font-medium">{giverName} → {takerName}</p>
-      <button onClick={onBack} className="mt-4 px-8 py-3 bg-indigo-500 text-white rounded-2xl font-semibold">カレンダーに戻る</button>
+      <button onClick={onBack} className="mt-4 px-8 py-3 bg-indigo-500 text-white rounded-2xl font-semibold">ホームに戻る</button>
     </div>
   );
 
@@ -538,7 +597,11 @@ function ShiftChangeScreen({ initialDate, shifts, currentMemberId, onBack }: {
               <button onClick={() => {
                 setSubmitError('');
                 void createSwap.mutateAsync({ date: selDate, type: selType, fromUserId: giverId!, toUserId: takerId! })
-                  .then(() => { setShowConfirm(false); setSubmitted(true); })
+                  .then(() => {
+                    setShowConfirm(false);
+                    setSubmitted(true);
+                    window.setTimeout(() => window.location.assign('/'), 1000);
+                  })
                   .catch((error: unknown) => setSubmitError(error instanceof Error ? error.message : '交代を登録できませんでした'));
               }}
                 className="flex-1 py-3.5 rounded-2xl bg-indigo-500 text-white font-bold text-sm">
@@ -556,15 +619,17 @@ function ShiftChangeScreen({ initialDate, shifts, currentMemberId, onBack }: {
 // ─── Shift Entry Screen ────────────────────────────────────────────────────────
 
 function ShiftEntryScreen({ initialDate, existingShifts, currentMemberId, onBack, onSave }: {
-  initialDate: string; existingShifts: Shift[]; currentMemberId: string; onBack: () => void; onSave: (s: Shift[]) => void;
+  initialDate: string; existingShifts: Shift[]; currentMemberId: string; onBack: () => void; onSave: (s: Shift[]) => Promise<void>;
 }) {
   const [selectedDates, setSelectedDates] = useState<string[]>([initialDate]);
-  const [startTime, setStartTime] = useState('11:00');
+  const [startTime, setStartTime] = useState('10:00');
   const [endTime, setEndTime] = useState('15:00');
   const [shiftType, setShiftType] = useState<'lunch' | 'dinner'>('lunch');
+  const [allDay, setAllDay] = useState(false);
   const [showPresets, setShowPresets] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [savedCount, setSavedCount] = useState(0);
+  const [saveError, setSaveError] = useState('');
   const todayDate = new Date();
   const [calYear, setCalYear] = useState(todayDate.getFullYear());
   const [calMonth, setCalMonth] = useState(todayDate.getMonth());
@@ -582,16 +647,34 @@ function ShiftEntryScreen({ initialDate, existingShifts, currentMemberId, onBack
 
   const lunchBlockedOnAny = selectedDates.some(d => existingMap.get(d)?.has('lunch'));
   const dinnerBlockedOnAny = selectedDates.some(d => existingMap.get(d)?.has('dinner'));
+  const allDayBlockedOnAny = selectedDates.some(d => existingMap.has(d));
   const toggleDate = (key: string) => setSelectedDates(prev => prev.includes(key) ? prev.filter(d => d !== key) : [...prev, key]);
-  const applyPreset = (p: TimePreset) => { setStartTime(p.startTime); setEndTime(p.endTime); setShiftType(p.type); setShowPresets(false); };
-  const savableDates = selectedDates.filter(d => !existingMap.get(d)?.has(shiftType));
-  const hours = calcHours(startTime, endTime);
+  const applyPreset = (p: TimePreset) => {
+    setStartTime(p.startTime);
+    setEndTime(p.endTime);
+    setAllDay(p.type === 'full');
+    if (p.type !== 'full') setShiftType(p.type);
+    setShowPresets(false);
+  };
+  const savableDates = selectedDates.filter(d => allDay ? !existingMap.has(d) : !existingMap.get(d)?.has(shiftType));
+  const hours = allDay ? 9.5 : calcHours(startTime, endTime);
 
-  const handleSave = () => {
+  const handleSave = async () => {
     const count = savableDates.length;
-    onSave(savableDates.map(date => ({ date, type: shiftType, startTime, endTime, memberId: currentMemberId })));
-    setSavedCount(count);
-    setSubmitted(true);
+    setSaveError('');
+    try {
+      const shiftsToSave = savableDates.flatMap(date => allDay
+        ? [
+            { date, type: 'lunch' as const, startTime: '10:00', endTime: '15:00', memberId: currentMemberId },
+            { date, type: 'dinner' as const, startTime: '17:00', endTime: '21:30', memberId: currentMemberId },
+          ]
+        : [{ date, type: shiftType, startTime, endTime, memberId: currentMemberId }]);
+      await onSave(shiftsToSave);
+      setSavedCount(count);
+      setSubmitted(true);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : 'シフトを登録できませんでした');
+    }
   };
 
   if (submitted) return (
@@ -695,7 +778,7 @@ function ShiftEntryScreen({ initialDate, existingShifts, currentMemberId, onBack
               <p className="text-xs text-gray-400 mb-2">よく使う時間帯</p>
               {TIME_PRESETS.map((p, i) => (
                 <button key={i} onClick={() => applyPreset(p)} className="w-full flex items-center gap-2 p-2.5 rounded-lg bg-white border border-gray-100 hover:border-indigo-200 hover:bg-indigo-50 transition-all text-left">
-                  <span className={`w-5 h-5 rounded text-white text-xs flex items-center justify-center font-bold ${p.type === 'lunch' ? 'bg-amber-400' : 'bg-indigo-400'}`}>{p.type === 'lunch' ? 'L' : 'D'}</span>
+                  <span className={`w-5 h-5 rounded text-white text-xs flex items-center justify-center font-bold ${p.type === 'lunch' ? 'bg-amber-400' : p.type === 'dinner' ? 'bg-indigo-400' : 'bg-emerald-500'}`}>{p.type === 'lunch' ? 'L' : p.type === 'dinner' ? 'D' : '通'}</span>
                   <span className="text-sm text-gray-700">{p.label}</span>
                 </button>
               ))}
@@ -704,32 +787,38 @@ function ShiftEntryScreen({ initialDate, existingShifts, currentMemberId, onBack
           <div className="flex items-center gap-3 mb-4">
             <div className="flex-1">
               <p className="text-xs text-gray-400 mb-1.5">開始時間</p>
-              <input type="time" value={startTime} onChange={e => setStartTime(e.target.value)} className="w-full border border-gray-200 rounded-xl px-3 py-3 text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-300 text-sm" />
+              <input type="time" value={startTime} disabled={allDay} onChange={e => setStartTime(e.target.value)} className="w-full border border-gray-200 rounded-xl px-3 py-3 text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-300 text-sm disabled:bg-gray-100 disabled:text-gray-400" />
             </div>
             <div className="text-gray-300 mt-5">〜</div>
             <div className="flex-1">
               <p className="text-xs text-gray-400 mb-1.5">終了時間</p>
-              <input type="time" value={endTime} onChange={e => setEndTime(e.target.value)} className="w-full border border-gray-200 rounded-xl px-3 py-3 text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-300 text-sm" />
+              <input type="time" value={endTime} disabled={allDay} onChange={e => setEndTime(e.target.value)} className="w-full border border-gray-200 rounded-xl px-3 py-3 text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-300 text-sm disabled:bg-gray-100 disabled:text-gray-400" />
             </div>
           </div>
+          {allDay && <p className="text-xs text-emerald-700 text-center mb-3">10:00〜15:00（ランチ）と17:00〜21:30（ディナー）を登録します。</p>}
           <div className="flex gap-2 mb-3">
-            <button onClick={() => !lunchBlockedOnAny && setShiftType('lunch')} disabled={lunchBlockedOnAny}
-              className={`flex-1 py-2.5 rounded-xl text-sm font-semibold transition-all ${lunchBlockedOnAny ? 'bg-gray-100 text-gray-300 cursor-not-allowed' : shiftType === 'lunch' ? 'bg-amber-400 text-white' : 'bg-gray-100 text-gray-500'}`}>
+            <button onClick={() => { if (!lunchBlockedOnAny) { setAllDay(false); setShiftType('lunch'); setStartTime('10:00'); setEndTime('15:00'); } }} disabled={lunchBlockedOnAny}
+              className={`flex-1 py-2.5 rounded-xl text-sm font-semibold transition-all ${lunchBlockedOnAny ? 'bg-gray-100 text-gray-300 cursor-not-allowed' : !allDay && shiftType === 'lunch' ? 'bg-amber-400 text-white' : 'bg-gray-100 text-gray-500'}`}>
               ランチ{lunchBlockedOnAny && <span className="block text-[9px] font-normal mt-0.5 text-gray-400">登録済み</span>}
             </button>
-            <button onClick={() => !dinnerBlockedOnAny && setShiftType('dinner')} disabled={dinnerBlockedOnAny}
-              className={`flex-1 py-2.5 rounded-xl text-sm font-semibold transition-all ${dinnerBlockedOnAny ? 'bg-gray-100 text-gray-300 cursor-not-allowed' : shiftType === 'dinner' ? 'bg-indigo-500 text-white' : 'bg-gray-100 text-gray-500'}`}>
+            <button onClick={() => { if (!dinnerBlockedOnAny) { setAllDay(false); setShiftType('dinner'); setStartTime('17:00'); setEndTime('21:30'); } }} disabled={dinnerBlockedOnAny}
+              className={`flex-1 py-2.5 rounded-xl text-sm font-semibold transition-all ${dinnerBlockedOnAny ? 'bg-gray-100 text-gray-300 cursor-not-allowed' : !allDay && shiftType === 'dinner' ? 'bg-indigo-500 text-white' : 'bg-gray-100 text-gray-500'}`}>
               ディナー{dinnerBlockedOnAny && <span className="block text-[9px] font-normal mt-0.5 text-gray-400">登録済み</span>}
+            </button>
+            <button onClick={() => { if (!allDayBlockedOnAny) { setAllDay(true); setStartTime('10:00'); setEndTime('21:30'); } }} disabled={allDayBlockedOnAny}
+              className={`flex-1 py-2.5 rounded-xl text-sm font-semibold transition-all ${allDayBlockedOnAny ? 'bg-gray-100 text-gray-300 cursor-not-allowed' : allDay ? 'bg-emerald-500 text-white' : 'bg-gray-100 text-gray-500'}`}>
+              通し{allDayBlockedOnAny && <span className="block text-[9px] font-normal mt-0.5 text-gray-400">登録済み</span>}
             </button>
           </div>
           {hours > 0 && <div className="bg-indigo-50 rounded-xl p-3 text-center"><span className="text-sm text-indigo-600 font-semibold">勤務時間: {hours}時間</span></div>}
         </div>
       </div>
       <div className="p-4 border-t border-gray-100 bg-white">
+        {saveError && <p className="text-sm text-red-500 text-center mb-2">{saveError}</p>}
         <button onClick={handleSave} disabled={savableDates.length === 0 || hours <= 0}
           className="w-full py-4 rounded-2xl font-bold text-white transition-all disabled:opacity-40"
           style={{ background: savableDates.length > 0 && hours > 0 ? '#10b981' : '#d1d5db' }}>
-          {savableDates.length > 0 ? `${savableDates.length}日分を登録する` : selectedDates.length > 0 ? 'すべての日付に登録済みのシフトがあります' : '日付を選択してください'}
+          {savableDates.length > 0 ? `${savableDates.length}日分の${allDay ? '通し' : ''}シフトを登録する` : selectedDates.length > 0 ? '選択した日付は登録済みです' : '日付を選択してください'}
         </button>
       </div>
     </div>
@@ -739,14 +828,44 @@ function ShiftEntryScreen({ initialDate, existingShifts, currentMemberId, onBack
 // ─── My Page Screen ────────────────────────────────────────────────────────────
 
 function MyPageScreen({ profile, onUpdate, onLogout, onDeleteAccount }: {
-  profile: UserProfile; onUpdate: (p: UserProfile) => void; onLogout: () => void; onDeleteAccount: () => void;
+  profile: UserProfile; onUpdate: (p: UserProfile) => Promise<void>; onLogout: () => void; onDeleteAccount: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState(profile);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [colorSaving, setColorSaving] = useState(false);
+  const [colorError, setColorError] = useState('');
 
-  const handleSave = () => { onUpdate(form); setEditing(false); setSaved(true); setTimeout(() => setSaved(false), 2000); };
+  useEffect(() => {
+    if (!editing) setForm(profile);
+  }, [profile, editing]);
+
+  const handleSave = async () => {
+    try {
+      await onUpdate(form);
+      setEditing(false);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : 'プロフィールを保存できませんでした');
+    }
+  };
+
+  const handleColorChange = async (color: UserProfile['color']) => {
+    if (color === profile.color || colorSaving) return;
+    setColorSaving(true);
+    setColorError('');
+    try {
+      await onUpdate({ ...profile, color });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (error) {
+      setColorError(error instanceof Error ? error.message : 'アイコンの色を保存できませんでした');
+    } finally {
+      setColorSaving(false);
+    }
+  };
 
   if (showDeleteConfirm) return (
     <div className="p-6 flex flex-col items-center text-center h-full justify-center">
@@ -767,14 +886,39 @@ function MyPageScreen({ profile, onUpdate, onLogout, onDeleteAccount }: {
   return (
     <div className="p-4 space-y-4">
       <div className="flex flex-col items-center py-6">
-        <div className="w-20 h-20 rounded-full bg-indigo-100 flex items-center justify-center mb-3">
-          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="1.5"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        <div className="w-20 h-20 rounded-full flex items-center justify-center mb-3" style={{ backgroundColor: profile.color }}>
+          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.5"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
         </div>
         <h2 className="text-xl font-bold text-gray-900">{profile.name}</h2>
         <p className="text-sm text-gray-400 mt-1">{profile.email}</p>
       </div>
 
-      {saved && <div className="bg-emerald-50 border border-emerald-100 rounded-2xl p-3 text-center text-sm text-emerald-600 font-semibold">✓ 保存しました</div>}
+      <div className="bg-white rounded-2xl p-4 shadow-sm">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <h3 className="text-sm font-bold text-gray-700">アイコンの色</h3>
+            <p className="text-xs text-gray-400 mt-1">色を選ぶとすぐに保存され、メンバー表示にも反映されます。</p>
+          </div>
+          {colorSaving && <span className="text-xs text-indigo-500">保存中...</span>}
+        </div>
+        <div className="flex flex-wrap gap-3" role="radiogroup" aria-label="アイコンの色">
+          {MEMBER_COLORS.map((color) => (
+            <button
+              key={color}
+              type="button"
+              role="radio"
+              aria-checked={profile.color === color}
+              aria-label={`色 ${color}`}
+              disabled={colorSaving}
+              onClick={() => void handleColorChange(color)}
+              className={`w-9 h-9 rounded-full transition-transform disabled:opacity-60 ${profile.color === color ? 'ring-2 ring-offset-2 ring-gray-700 scale-110' : 'hover:scale-110'}`}
+              style={{ backgroundColor: color }}
+            />
+          ))}
+        </div>
+        {colorError && <p className="text-xs text-red-500 mt-3">{colorError}</p>}
+        {saved && <p className="text-xs text-emerald-600 font-semibold mt-3">✓ 保存しました</p>}
+      </div>
 
       {/* Profile info / edit */}
       <div className="bg-white rounded-2xl p-4 shadow-sm">
@@ -802,19 +946,6 @@ function MyPageScreen({ profile, onUpdate, onLogout, onDeleteAccount }: {
             ))}
           </div>
         )}
-      </div>
-
-      {/* Monthly stats */}
-      <div className="bg-white rounded-2xl p-4 shadow-sm">
-        <h3 className="text-sm font-bold text-gray-700 mb-3">今月の実績</h3>
-        <div className="grid grid-cols-2 gap-3">
-          {[{ label: '出勤日数', value: '12日' }, { label: '総勤務時間', value: '48時間' }, { label: '欠勤', value: '0日' }, { label: '遅刻', value: '0回' }].map(({ label, value }) => (
-            <div key={label} className="bg-gray-50 rounded-xl p-3 text-center">
-              <p className="text-xs text-gray-400 mb-1">{label}</p>
-              <p className="text-lg font-bold text-gray-800">{value}</p>
-            </div>
-          ))}
-        </div>
       </div>
 
       <button onClick={onLogout} className="w-full py-3.5 rounded-2xl border-2 border-gray-100 text-gray-500 text-sm font-semibold">ログアウト</button>
@@ -1027,6 +1158,7 @@ export default function App() {
   const shiftsQuery = useShifts();
   const saveShifts = useSaveShifts();
   const deleteShiftMutation = useDeleteShift();
+  const updateShiftTimesMutation = useUpdateShiftTimes();
   const profileQuery = useProfile();
   const saveProfile = useSaveProfile();
   const incomeQuery = useIncomeSettings();
@@ -1046,7 +1178,7 @@ export default function App() {
     mypage: '/settings/mypage', 'income-settings': '/settings/income', help: '/settings/help',
   };
   const setScreen = (next: Screen, date = selectedDate) => navigate({ pathname: screenPaths[next], search: date ? `?date=${encodeURIComponent(date)}` : '' });
-  const [profile, setProfile] = useState<UserProfile>({ name: '', email: '', phone: '' });
+  const [profile, setProfile] = useState<UserProfile>({ name: '', email: '', phone: '', color: '#6366f1' });
   const [menuOpen, setMenuOpen] = useState(false);
   const [selectedDate, setSelectedDateState] = useState<string | null>(() => new URLSearchParams(window.location.search).get('date'));
   const setSelectedDate = (date: string | null) => {
@@ -1057,6 +1189,7 @@ export default function App() {
   const [calYear, setCalYear] = useState(new Date().getFullYear());
   const [calMonth, setCalMonth] = useState(new Date().getMonth());
   const [memberDate, setMemberDate] = useState(() => todayKey(new Date()));
+  const [memberShiftType, setMemberShiftType] = useState<'lunch' | 'dinner'>('lunch');
   const memberDateQuery = useMembersByDate(memberDate);
   const [shifts, setShifts] = useState<Shift[]>([]);
   const [incomeSettings, setIncomeSettings] = useState<IncomeSettings>({ hourlyWage: 1100, nightBonus: 250, holidayBonus: 500, transportationFee: 300, showForecast: true });
@@ -1069,7 +1202,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (user) setProfile({ name: user.name, email: user.email, phone: (user as typeof user & { phone?: string }).phone ?? '' });
+    if (user) setProfile({ name: user.name, email: user.email, phone: (user as typeof user & { phone?: string }).phone ?? '', color: ((user as typeof user & { color?: string }).color ?? '#6366f1') as UserProfile['color'] });
   }, [user]);
 
   useEffect(() => {
@@ -1084,7 +1217,7 @@ export default function App() {
   }, [shiftsQuery.data]);
 
   useEffect(() => {
-    if (profileQuery.data) setProfile({ name: profileQuery.data.name, email: profileQuery.data.email, phone: profileQuery.data.phone ?? '' });
+    if (profileQuery.data) setProfile({ name: profileQuery.data.name, email: profileQuery.data.email, phone: profileQuery.data.phone ?? '', color: profileQuery.data.color as UserProfile['color'] });
   }, [profileQuery.data]);
 
   useEffect(() => {
@@ -1104,24 +1237,36 @@ export default function App() {
   const totalHours = 72;
   const estimatedIncome = Math.round(monthlyHours * incomeSettings.hourlyWage + shifts.length * incomeSettings.transportationFee);
 
-  const addShifts = (newShifts: Shift[]) => {
-    void saveShifts.mutateAsync(newShifts).catch((error: unknown) => window.alert(error instanceof Error ? error.message : 'シフトを登録できませんでした'));
+  const addShifts = async (newShifts: Shift[]) => {
+    await saveShifts.mutateAsync(newShifts);
     setShifts(prev => {
-    const merged = [...prev];
-    newShifts.forEach(ns => { if (!merged.find(s => s.date === ns.date && s.type === ns.type)) merged.push(ns); });
-    return merged;
+      const merged = [...prev];
+      newShifts.forEach(ns => { if (!merged.find(s => s.date === ns.date && s.type === ns.type)) merged.push(ns); });
+      return merged;
     });
   };
 
-  const deleteShift = (date: string, type: 'lunch' | 'dinner') => {
+  const deleteShift = async (date: string, type: 'lunch' | 'dinner') => {
     const target = shifts.find((shift) => shift.date === date && shift.type === type && shift.memberId === currentMemberId);
-    if (target?.id) void deleteShiftMutation.mutateAsync(target.id).catch((error: unknown) => window.alert(error instanceof Error ? error.message : 'シフトを削除できませんでした'));
-    setShifts(prev => prev.filter(s => !(s.date === date && s.type === type && s.memberId === currentMemberId)));
+    if (!target?.id) return;
+    try {
+      await deleteShiftMutation.mutateAsync(target.id);
+      window.location.assign('/');
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : 'シフトを削除できませんでした');
+    }
   };
 
-  const saveProfileToApi = (nextProfile: UserProfile) => {
+  const updateShiftTimes = async (date: string, type: 'lunch' | 'dinner', startTime: string, endTime: string) => {
+    const target = shifts.find((shift) => shift.date === date && shift.type === type && shift.memberId === currentMemberId);
+    if (!target?.id) throw new Error('シフトが見つかりません');
+    await updateShiftTimesMutation.mutateAsync({ id: target.id, startTime, endTime });
+    window.location.assign('/');
+  };
+
+  const saveProfileToApi = async (nextProfile: UserProfile) => {
+    await saveProfile.mutateAsync({ name: nextProfile.name, phone: nextProfile.phone, color: nextProfile.color });
     setProfile(nextProfile);
-    void saveProfile.mutateAsync({ name: nextProfile.name, phone: nextProfile.phone }).catch((error: unknown) => window.alert(error instanceof Error ? error.message : 'プロフィールを保存できませんでした'));
   };
 
   const saveIncomeSettingsToApi = (settings: IncomeSettings) => {
@@ -1141,8 +1286,7 @@ export default function App() {
             {screen !== 'home' && (
               <button
                 onClick={() => {
-                  if (screen === 'shift-change' || screen === 'shift-entry') setScreen('calendar');
-                  else setScreen('home');
+                  setScreen('home');
                 }}
                 className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 transition-colors">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6"/></svg>
@@ -1159,23 +1303,10 @@ export default function App() {
         <main className="flex-1 overflow-y-auto">
           {screen === 'home' && (
             <div className="p-4 space-y-3">
-              {/* カレンダーへのリンクカード */}
-              <button
-                onClick={() => setScreen('calendar')}
-                className="w-full flex items-center gap-4 p-4 bg-white rounded-2xl shadow-sm border border-indigo-100 hover:bg-indigo-50 active:bg-indigo-100 transition-colors text-left"
-              >
-                <div className="w-11 h-11 rounded-xl bg-indigo-500 flex items-center justify-center flex-shrink-0">
-                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.8">
-                    <rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/>
-                    <line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>
-                  </svg>
-                </div>
-                <div className="flex-1">
-                  <p className="font-bold text-gray-900">カレンダーを見る</p>
-                  <p className="text-xs text-gray-400 mt-0.5">シフトの確認・記入・変更はこちら</p>
-                </div>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2.5"><polyline points="9 18 15 12 9 6"/></svg>
-              </button>
+              <Calendar year={calYear} month={calMonth} shifts={myShifts} today={today}
+                onPrev={() => { calMonth === 0 ? (setCalYear(calYear-1), setCalMonth(11)) : setCalMonth(calMonth-1); }}
+                onNext={() => { calMonth === 11 ? (setCalYear(calYear+1), setCalMonth(0)) : setCalMonth(calMonth+1); }}
+                onDayClick={(date) => setSelectedDate(date)} />
 
               {/* Next shift */}
               {nextShift && (
@@ -1196,7 +1327,9 @@ export default function App() {
                 const dow = new Date(y, mo-1, d).getDay();
                 const isToday_ = memberDate === today;
                 const label = isToday_ ? '今日' : `${mo}月${d}日（${dayNames[dow]}）`;
-                const members = memberDateQuery.data ? [...new Map(memberDateQuery.data.map((member) => [member.id, member])).values()] : null;
+                const members = memberDateQuery.data
+                  ? [...new Map(memberDateQuery.data.filter((member) => member.type === memberShiftType).map((member) => [member.id, member])).values()]
+                  : null;
                 const changeDay = (delta: number) => {
                   const dt = new Date(y, mo-1, d);
                   dt.setDate(dt.getDate() + delta);
@@ -1216,8 +1349,22 @@ export default function App() {
                         </button>
                       </div>
                     </div>
+                    <div className="flex gap-2 mb-3">
+                      <button
+                        onClick={() => setMemberShiftType('lunch')}
+                        className={`flex-1 py-2 rounded-xl text-xs font-semibold transition-colors ${memberShiftType === 'lunch' ? 'bg-amber-400 text-white' : 'bg-gray-100 text-gray-500'}`}
+                      >
+                        ランチ
+                      </button>
+                      <button
+                        onClick={() => setMemberShiftType('dinner')}
+                        className={`flex-1 py-2 rounded-xl text-xs font-semibold transition-colors ${memberShiftType === 'dinner' ? 'bg-indigo-500 text-white' : 'bg-gray-100 text-gray-500'}`}
+                      >
+                        ディナー
+                      </button>
+                    </div>
                     {!members || members.length === 0 ? (
-                      <p className="text-sm text-gray-400 text-center py-2">まだシフトが設定されていません</p>
+                      <p className="text-sm text-gray-400 text-center py-2">この時間帯のシフトはありません</p>
                     ) : (
                       <div className="flex gap-3 flex-wrap">
                         {members.map(m => (
@@ -1276,13 +1423,16 @@ export default function App() {
               initialDate={selectedDate || today}
               shifts={shifts}
               currentMemberId={currentMemberId}
-              onBack={() => setScreen('calendar')}
+              onBack={() => setScreen('home')}
             />
           )}
 
           {screen === 'shift-entry' && (
-            <ShiftEntryScreen initialDate={selectedDate || today} existingShifts={shifts} currentMemberId={currentMemberId} onBack={() => setScreen('calendar')}
-              onSave={(newShifts) => { addShifts(newShifts); setTimeout(() => setScreen('calendar'), 1500); }} />
+            <ShiftEntryScreen initialDate={selectedDate || today} existingShifts={shifts} currentMemberId={currentMemberId} onBack={() => setScreen('home')}
+              onSave={async (newShifts) => {
+                await addShifts(newShifts);
+                window.setTimeout(() => window.location.assign('/'), 1200);
+              }} />
           )}
 
           {screen === 'mypage' && (
@@ -1308,11 +1458,12 @@ export default function App() {
         </main>
 
         {/* Day action modal — calendar screen only */}
-        {selectedDate && screen === 'calendar' && (
+        {selectedDate && (screen === 'calendar' || screen === 'home') && (
           <DayActionModal date={selectedDate} shifts={myShifts} onClose={() => setSelectedDate(null)}
             onShiftChange={(d) => { setSelectedDate(d); setScreen('shift-change', d); }}
             onShiftEntry={(d) => { setSelectedDate(d); setScreen('shift-entry', d); }}
-            onShiftDelete={deleteShift} />
+            onShiftDelete={deleteShift}
+            onShiftTimeUpdate={updateShiftTimes} />
         )}
 
         {/* Hamburger drawer */}
@@ -1321,10 +1472,10 @@ export default function App() {
             <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
             <div className="relative w-72 bg-white h-full shadow-2xl flex flex-col overflow-y-auto" onClick={e => e.stopPropagation()}>
               {/* Profile — always visible at top, never clipped */}
-              <div className="flex-shrink-0 p-6 pt-8 border-b border-gray-100 bg-indigo-50">
+              <div className="flex-shrink-0 p-6 pt-8 border-b border-gray-100" style={{ backgroundColor: `${profile.color}18` }}>
                 <div className="flex items-center gap-3">
-                  <div className="w-12 h-12 rounded-full bg-indigo-200 flex items-center justify-center flex-shrink-0">
-                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="1.8"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                  <div className="w-12 h-12 rounded-full flex items-center justify-center flex-shrink-0" style={{ backgroundColor: profile.color }}>
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.8"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
                   </div>
                   <div className="min-w-0">
                     <p className="font-bold text-gray-900 truncate">{profile.name}</p>

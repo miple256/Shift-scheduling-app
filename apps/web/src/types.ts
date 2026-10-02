@@ -22,7 +22,11 @@ export interface UserProfile {
   name: string
   email: string
   phone: string
+  color: MemberColor;
 }
+
+export const MEMBER_COLORS = ['#ec4899', '#6366f1', '#10b981', '#f59e0b', '#3b82f6', '#8b5cf6', '#14b8a6', '#f97316'] as const;
+export type MemberColor = typeof MEMBER_COLORS[number];
 
 export interface IncomeSettings {
   hourlyWage: number
@@ -36,7 +40,7 @@ export interface TimePreset {
   label: string
   startTime: string
   endTime: string
-  type: ShiftType
+  type: ShiftType | 'full'
 }
 
 export interface HelpItem {

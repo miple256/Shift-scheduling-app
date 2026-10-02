@@ -5,8 +5,13 @@ import { z } from 'zod'
 import { db } from '../db/index.js'
 import { users } from '../db/schema.js'
 import { currentSession } from '../lib/session.js'
+import { MEMBER_COLORS } from '../auth.js'
 
-const profileSchema = z.object({ name: z.string().trim().min(1).max(100), phone: z.string().trim().max(40).nullable().optional() })
+const profileSchema = z.object({
+  name: z.string().trim().min(1).max(100),
+  phone: z.string().trim().max(40).nullable().optional(),
+  color: z.enum(MEMBER_COLORS).optional(),
+})
 
 export const meRoute = new Hono()
   .get('/', async (c) => {

@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
-import { and, eq, gte, inArray, lt } from 'drizzle-orm'
+import { and, eq, gte, lt } from 'drizzle-orm'
 import { db } from '../db/index.js'
 import { shifts, users } from '../db/schema.js'
 import { currentSession } from '../lib/session.js'
@@ -8,11 +8,15 @@ import { dateSchema, shiftTypeSchema, timeSchema } from '../lib/validation.js'
 import { z } from 'zod'
 
 const createSchema = z.object({
-  dates: z.array(dateSchema).min(1).max(62),
-  type: shiftTypeSchema,
-  startTime: timeSchema,
-  endTime: timeSchema,
-}).refine((value) => value.endTime > value.startTime, { message: '終了時刻は開始時刻より後にしてください' })
+  shifts: z.array(z.object({
+    date: dateSchema,
+    type: shiftTypeSchema,
+    startTime: timeSchema,
+    endTime: timeSchema,
+  }).refine((value) => value.endTime > value.startTime, { message: '終了時刻は開始時刻より後にしてください' })).min(1).max(124),
+})
+const updateTimeSchema = z.object({ startTime: timeSchema, endTime: timeSchema })
+  .refine((value) => value.endTime > value.startTime, { message: '終了時刻は開始時刻より後にしてください' })
 
 export const shiftsRoute = new Hono()
   .get('/', async (c) => {
@@ -39,16 +43,23 @@ export const shiftsRoute = new Hono()
   .post('/', zValidator('json', createSchema), async (c) => {
     const session = await currentSession(c)
     if (!session) return c.json({ error: 'ログインが必要です' }, 401)
-    const values = c.req.valid('json')
+    const { shifts: requestedShifts } = c.req.valid('json')
     const inserted = db.transaction((tx) => {
       let count = 0
-      for (const date of values.dates) {
-        const result = tx.insert(shifts).values({ id: crypto.randomUUID(), userId: session.user.id, date, type: values.type, startTime: values.startTime, endTime: values.endTime }).onConflictDoNothing().run()
+      for (const shift of requestedShifts) {
+        const result = tx.insert(shifts).values({ id: crypto.randomUUID(), userId: session.user.id, ...shift }).onConflictDoNothing().run()
         count += result.changes
       }
       return count
     })
     return c.json({ created: inserted })
+  })
+  .patch('/:id', zValidator('json', updateTimeSchema), async (c) => {
+    const session = await currentSession(c)
+    if (!session) return c.json({ error: 'ログインが必要です' }, 401)
+    const values = c.req.valid('json')
+    const result = await db.update(shifts).set(values).where(and(eq(shifts.id, c.req.param('id')), eq(shifts.userId, session.user.id)))
+    return result.changes ? c.json({ ok: true }) : c.json({ error: 'シフトが見つかりません' }, 404)
   })
   .delete('/:id', async (c) => {
     const session = await currentSession(c)

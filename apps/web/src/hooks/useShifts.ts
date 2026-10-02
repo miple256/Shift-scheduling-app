@@ -18,8 +18,7 @@ export function useSaveShifts() {
   return useMutation({
     mutationFn: async (shifts: Shift[]) => {
       if (!shifts.length) return { created: 0 }
-      const first = shifts[0]
-      const response = await api.api.shifts.$post({ json: { dates: shifts.map((shift) => shift.date), type: first.type, startTime: first.startTime, endTime: first.endTime } })
+      const response = await api.api.shifts.$post({ json: { shifts: shifts.map(({ date, type, startTime, endTime }) => ({ date, type, startTime, endTime })) } })
       if (!response.ok) throw new Error('シフトを登録できませんでした')
       return response.json()
     },
